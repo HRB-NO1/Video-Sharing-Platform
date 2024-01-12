@@ -1,31 +1,52 @@
 import express from 'express';
-const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-const ffmpeg = require('fluent-ffmpeg');
+import { convertVideo, deleteProcessedVideo, deleteRawVideo, downloadRawVideo, setupDirectory, uploadProcessedVideo } from './storage';
 
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+setupDirectory();
+
+// const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+// const ffmpeg = require('fluent-ffmpeg');
+
+// ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 app.use(express.json());
 
-app.post('/convert-video', (req, res) => {
-    const inputFilePath = req.body.inputFilePath;
-    const outputFilePath = req.body.outputFilePath;
-
-    if (!inputFilePath || !outputFilePath) {
-        return res.status(400).send('Bad Request: Missing file path');
+app.post('/convert-video', async (req, res) => {
+    let data;
+    try {
+        const message = Buffer.from(req.body.message.data, 'base64').toString('utf-8');
+        data = JSON.parse(message);
+        if (!data.name) {
+            throw new Error('Invalid message payload received');
+        }
+    } catch (err) {
+        console.error(err);
+        return res.status(400).send('Bad Request: missing file name');
     }
 
-    ffmpeg(inputFilePath)
-        .toFormat('avi')
-        .on('end', () => {
-            console.log('Conversion finished successfully');
-            res.status(200).send('Conversion finished successfully');
-        })
-        .on('error', (err: Error) => { // 明确指定 err 为 Error 类型
-            console.error('An error occurred: ' + err.message);
-            res.status(500).send('An error occurred: ' + err.message);
-        })
-        .save(outputFilePath);
+    const inputVideoName = data.name;
+    const outputVideoName = inputVideoName.split('.')[0] + '.avi';
+
+    await downloadRawVideo(inputVideoName);
+
+    try {
+        await convertVideo(inputVideoName, outputVideoName);
+    } catch (err) {
+        await Promise.all([
+            deleteRawVideo(inputVideoName),
+            deleteProcessedVideo(outputVideoName)
+        ]);
+        console.error(err);
+        return res.status(500).send('Internal Server Error: failed to convert video');
+    }
+    await uploadProcessedVideo(outputVideoName);
+
+    await Promise.all([
+        deleteRawVideo(inputVideoName),
+        deleteProcessedVideo(outputVideoName)
+    ]);
+
+    return res.status(200).send('Conversion finished successfully');
 });
 
 const port = process.env.PORT || 3000;
